@@ -2,9 +2,15 @@
 
 ## Goal
 
-Build a pipeline that uses the real 3D design file (`basic_shapes/s_rice.stp`) and its sampled point data (`basic_shapes/s_rice.xyz`) to extract 3D primitives, render candidate views, and precisely align the rendered geometry and color cues to calibrated 2D camera images in `camera_images/`.
+Build a pipeline that uses the real 3D design file (`basic_shapes/s_rice.stp`) and its sampled point data (`basic_shapes/s_rice.xyz`) to extract 3D primitives, render candidate views, and precisely align CAD-derived geometry, color, and shading cues to calibrated 2D camera images in `camera_images/`.
 
 The target output is not just the closest rendered view. The final output should estimate a camera-to-model pose per image and provide visual overlays, primitive correspondences, and confidence scores.
+
+The core problem is an inverse rendering alignment problem:
+
+- Geometry should explain observed edges, contours, corners, holes, and occlusion boundaries.
+- CAD color/material information should explain observed surface appearance when available.
+- Shading should be used as a soft cue after pose is close, because lighting and exposure can differ between rendering and the real camera.
 
 ## Current Data
 
@@ -46,7 +52,7 @@ flowchart LR
     H --> K["Coarse view retrieval"]
     J --> K
     K --> L["Pose optimization"]
-    L --> M["Geometry + color alignment"]
+    L --> M["Geometry + color + shading alignment"]
     M --> N["Overlay, pose, score, correspondences"]
 ```
 
@@ -203,6 +209,16 @@ Color loss:
 - Use robust color statistics per primitive rather than raw pixel equality.
 - Penalize large color mismatch only after geometry is close.
 
+Shading loss:
+
+- Render approximate normals, visibility, and light response for each primitive.
+- Compare low-frequency intensity gradients rather than exact pixel intensity.
+- Estimate simple lighting per image after pose refinement:
+  - ambient term
+  - one or two directional lights
+  - optional exposure/gamma correction
+- Use shading as a soft regularizer, not as the primary alignment signal.
+
 Recommended combined loss:
 
 ```text
@@ -210,10 +226,11 @@ L = w_edge * L_edge
   + w_silhouette * L_silhouette
   + w_primitive * L_primitive
   + w_color * L_color
+  + w_shading * L_shading
   + w_pose_prior * L_pose_prior
 ```
 
-Start with `w_color = 0`, then increase it after geometry converges.
+Start with `w_color = 0` and `w_shading = 0`, then increase them after geometry converges.
 
 ## Outputs
 
@@ -278,6 +295,13 @@ Status: initial implementation exists.
 - Add primitive-region color sampling.
 - Add robust color loss.
 - Use color only after geometry alignment.
+
+### M6: Shading-Aware Alignment
+
+- Add normal/depth rendering from primitives or dense XYZ.
+- Estimate per-image lighting after pose alignment.
+- Add low-frequency shading residuals.
+- Report whether shading supports or contradicts the geometry alignment.
 
 ## Immediate Next Implementation
 

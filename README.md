@@ -20,4 +20,7 @@ The script renders candidate point-cloud views and writes match scores and overl
 
 ## Design
 
-See `docs/alignment_system_design.md` for the planned primitive extraction, geometry alignment, color alignment, and pose optimization pipeline.
+See:
+
+- `docs/alignment_system_design.md` for the overall primitive extraction, geometry alignment, color alignment, shading alignment, and pose optimization pipeline.
+- `docs/implementation_design.md` for concrete modules, schemas, rendering outputs, losses, and implementation milestones.
