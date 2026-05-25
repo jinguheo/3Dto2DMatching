@@ -52,6 +52,8 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=3, help="Number of coarse candidates to refine per image")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--no-refine", action="store_true", help="Skip 2D refinement; use coarse best pose")
+    parser.add_argument("--no-flip", action="store_true", help="Disable horizontal flip search (use when camera orientation is known)")
+    parser.add_argument("--flip-y", action="store_true", help="Also search vertical flip variants")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -64,7 +66,11 @@ def main() -> None:
     print(f"  {len(points):,} points loaded")
 
     image_paths = load_image_paths(args.images)
-    print(f"Processing {len(image_paths)} images | {len(yaw_values)} yaw x {len(pitch_values)} pitch candidates")
+    flip_x_variants = 1 if args.no_flip else 2
+    flip_y_variants = 2 if args.flip_y else 1
+    n_coarse = len(yaw_values) * len(pitch_values) * flip_x_variants * flip_y_variants
+    print(f"Processing {len(image_paths)} images | {n_coarse} coarse candidates "
+          f"(flip_x={'off' if args.no_flip else 'on'}, flip_y={'on' if args.flip_y else 'off'})")
     if not args.no_refine:
         n_refine = 7 * 5 * 5 * 5  # scale_deltas * tx * ty * roll
         print(f"  Refinement: top-{args.top_k} x {n_refine} steps per image (use --no-refine to skip)")
@@ -95,12 +101,15 @@ def main() -> None:
             pitch_values,
             size,
             point_radius=args.point_radius,
+            search_flip_x=not args.no_flip,
+            search_flip_y=args.flip_y,
         )
         best_coarse = coarse[0]
+        flip_tag = f"  flip_x={best_coarse['flip_x']} flip_y={best_coarse['flip_y']}"
         print(
             f"    Coarse best: yaw={best_coarse['yaw_deg']:.0f}  "
             f"pitch={best_coarse['pitch_deg']:.0f}  "
-            f"score={best_coarse['score']:.4f}"
+            f"score={best_coarse['score']:.4f}{flip_tag}"
         )
 
         # --- 2D refinement ---
@@ -121,12 +130,13 @@ def main() -> None:
                 for p in top_k
             ]
             best_pose = max(refined, key=lambda r: r["score"])
+            flip_tag = f"  flip_x={best_pose['flip_x']} flip_y={best_pose['flip_y']}"
             print(
                 f"    Refined:    yaw={best_pose['yaw_deg']:.0f}  "
                 f"pitch={best_pose['pitch_deg']:.0f}  "
                 f"roll={best_pose['roll_deg']:.1f}  "
                 f"tx={best_pose['tx_px']:.0f}  ty={best_pose['ty_px']:.0f}  "
-                f"score={best_pose['score']:.4f}"
+                f"score={best_pose['score']:.4f}{flip_tag}"
             )
 
         # --- Save outputs ---
@@ -146,6 +156,8 @@ def main() -> None:
             scale_override=best_pose["scale_px_per_unit"],
             tx_px=best_pose["tx_px"],
             ty_px=best_pose["ty_px"],
+            flip_x=best_pose.get("flip_x", False),
+            flip_y=best_pose.get("flip_y", False),
         )
 
         overlay_path = img_out_dir / "overlay_geometry.png"

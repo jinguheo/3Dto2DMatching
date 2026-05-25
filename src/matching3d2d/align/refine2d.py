@@ -40,10 +40,18 @@ def refine2d(
     yaw = base_pose["yaw_deg"]
     pitch = base_pose["pitch_deg"]
     base_scale = float(base_pose["scale_px_per_unit"])
+    flip_x = bool(base_pose.get("flip_x", False))
+    flip_y = bool(base_pose.get("flip_y", False))
 
-    # Pre-rotate once (the expensive part).
+    # Pre-rotate once (the expensive part), then apply the fixed flip from coarse.
     rotated = points @ rotation_matrix(yaw, pitch, 0.0).T
     xy_centered = rotated[:, :2] - rotated[:, :2].mean(axis=0, keepdims=True)
+    if flip_x:
+        xy_centered = xy_centered.copy()
+        xy_centered[:, 0] = -xy_centered[:, 0]
+    if flip_y:
+        xy_centered = xy_centered.copy()
+        xy_centered[:, 1] = -xy_centered[:, 1]
 
     # Pre-dilate image features to avoid redundant work in the inner loop.
     img_contour_dil = dilate(image_contour, 3)
@@ -102,6 +110,8 @@ def refine2d(
                             "yaw_deg": yaw,
                             "pitch_deg": pitch,
                             "roll_deg": roll,
+                            "flip_x": flip_x,
+                            "flip_y": flip_y,
                             "scale_px_per_unit": scale,
                             "tx_px": tx,
                             "ty_px": ty,
