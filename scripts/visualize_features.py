@@ -4,7 +4,7 @@ Shows how geometric features are extracted from the 3D data and what they
 look like when projected to the top and bottom camera perspectives.
 
 Outputs (outputs/feature_viz/):
-  step1_raw.png          - raw point cloud: top / bottom / side orthographic views
+  step1_raw.png          - raw point cloud: top / bottom orthographic views
   step2_normals.png      - surface normal direction map (|nx|R |ny|G |nz|B)
   step3_clusters.png     - normal direction clusters (same-orientation surfaces)
   step4_planes.png       - individual planes after distance splitting
@@ -53,11 +53,10 @@ POINT_R = 1
 
 # Camera-representative views
 VIEWS = {
-    "top":    dict(yaw=0,   pitch=88),   # nearly straight down
-    "bottom": dict(yaw=0,   pitch=-88),  # nearly straight up
-    "side":   dict(yaw=0,   pitch=0),    # front profile
+    "top":    dict(yaw=0, pitch=88),   # nearly straight down
+    "bottom": dict(yaw=0, pitch=-88),  # nearly straight up
 }
-VIEW_ORDER = ["top", "bottom", "side"]
+VIEW_ORDER = ["top", "bottom"]
 
 
 # ── Projection & rendering ─────────────────────────────────────────────────────
