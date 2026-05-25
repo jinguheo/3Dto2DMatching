@@ -25,7 +25,13 @@ from matching3d2d.vision.masks import extract_object_mask
 from matching3d2d.vision.contours import external_contour, internal_edges
 from matching3d2d.align.coarse import run_coarse_search
 from matching3d2d.align.refine2d import refine2d
-from matching3d2d.viz.overlays import overlay_m1, make_contact_sheet
+from matching3d2d.viz.overlays import (
+    overlay_m1,
+    make_contact_sheet,
+    save_debug_mask,
+    save_debug_edges,
+    save_debug_coarse,
+)
 from matching3d2d.viz.reports import save_pose_json
 
 
@@ -91,6 +97,13 @@ def main() -> None:
         mask_coverage = float(img_mask.sum()) / float(img_mask.size)
         print(f"    Object mask coverage: {mask_coverage:.1%}")
 
+        # --- Intermediate: mask and edge debug images ---
+        img_out_dir = args.out / image_path.stem
+        img_out_dir.mkdir(parents=True, exist_ok=True)
+
+        save_debug_mask(image_path, img_mask, img_contour, img_out_dir / "debug_mask.png")
+        save_debug_edges(image_path, img_mask, img_contour, img_internal, img_out_dir / "debug_edges.png")
+
         # --- Coarse search ---
         coarse = run_coarse_search(
             points,
@@ -111,6 +124,26 @@ def main() -> None:
             f"pitch={best_coarse['pitch_deg']:.0f}  "
             f"score={best_coarse['score']:.4f}{flip_tag}"
         )
+
+        # --- Intermediate: coarse scores CSV and top-K debug sheet ---
+        coarse_csv = img_out_dir / "coarse_scores.csv"
+        with coarse_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(coarse[0].keys()))
+            writer.writeheader()
+            writer.writerows(coarse)
+
+        top_k_poses = coarse[: args.top_k]
+        coarse_renders = []
+        for pose in top_k_poses:
+            rm, re, _ = render_points(
+                points,
+                pose["yaw_deg"], pose["pitch_deg"], size,
+                pad=0.12, point_radius=args.point_radius,
+                flip_x=pose.get("flip_x", False),
+                flip_y=pose.get("flip_y", False),
+            )
+            coarse_renders.append((rm, re, pose))
+        save_debug_coarse(image_path, coarse_renders, img_out_dir / "debug_coarse.png")
 
         # --- 2D refinement ---
         if args.no_refine:
@@ -139,10 +172,7 @@ def main() -> None:
                 f"score={best_pose['score']:.4f}{flip_tag}"
             )
 
-        # --- Save outputs ---
-        img_out_dir = args.out / image_path.stem
-        img_out_dir.mkdir(parents=True, exist_ok=True)
-
+        # --- Save final outputs ---
         save_pose_json(best_pose, img_out_dir / "pose.json")
 
         render_mask, render_edges, _ = render_points(
