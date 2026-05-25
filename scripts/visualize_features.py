@@ -52,9 +52,11 @@ PAD = 0.12
 POINT_R = 1
 
 # Camera-representative views
+# pitch=0   → camera at +Z looking down  (top surfaces: nz > 0)
+# pitch=180 → camera at -Z looking up    (bottom surfaces: nz < 0)
 VIEWS = {
-    "top":    dict(yaw=0, pitch=88),   # nearly straight down
-    "bottom": dict(yaw=0, pitch=-88),  # nearly straight up
+    "top":    dict(yaw=0, pitch=0),    # camera at +Z, looking down
+    "bottom": dict(yaw=0, pitch=180),  # camera at -Z, looking up
 }
 VIEW_ORDER = ["top", "bottom"]
 
@@ -271,6 +273,24 @@ def detect_holes(mask: np.ndarray, min_hole_px: int = 30) -> list[tuple[int, int
     return holes
 
 
+# ── Camera angle utilities ────────────────────────────────────────────────────
+
+def normal_to_camera_angles(n_hat: np.ndarray) -> tuple[float, float]:
+    """Convert a unit normal vector to (yaw_deg, pitch_deg) camera look-from angles.
+
+    Derivation: cam_dir_world = R(yaw,pitch)^T @ [0,0,1]
+                              = [sin(yaw)*sin(pitch), cos(yaw)*sin(pitch), cos(pitch)]
+    Invert to get yaw, pitch from any unit direction vector.
+    """
+    nz = float(np.clip(n_hat[2], -1.0, 1.0))
+    pitch = float(np.degrees(np.arccos(nz)))
+    if abs(nz) < 0.9999:
+        yaw = float(np.degrees(np.arctan2(float(n_hat[0]), float(n_hat[1]))))
+    else:
+        yaw = 0.0
+    return yaw, pitch
+
+
 # ── Panel assembly ─────────────────────────────────────────────────────────────
 
 def make_row(panels: list[np.ndarray], row_label: str = "",
@@ -317,17 +337,55 @@ def main() -> None:
 
     normals_norm = normalize_rows(normals) if normals is not None else None
 
+    # ── Pre-clustering: detect widest face → derive top/bottom view angles ──
+    K = 8
+    if normals_norm is not None:
+        cluster_labels, cluster_centers = kmeans_sphere(normals_norm, k=K, seed=7)
+        # Cluster 0 is the largest (sorted by size) = widest flat surface.
+        wide_normal = cluster_centers[0].copy()
+        # Align sign with the actual mean direction of cluster 0's normals.
+        c0_mean = normals_norm[cluster_labels == 0].mean(axis=0)
+        if float(np.dot(wide_normal, c0_mean)) < 0:
+            wide_normal = -wide_normal
+        yaw_top, pitch_top = normal_to_camera_angles(wide_normal)
+        yaw_bot, pitch_bot = normal_to_camera_angles(-wide_normal)
+        print(f"  Wide-face normal: [{wide_normal[0]:+.2f} {wide_normal[1]:+.2f} {wide_normal[2]:+.2f}]")
+        print(f"  Top view: yaw={yaw_top:.0f}°  pitch={pitch_top:.0f}°")
+        print(f"  Bottom view: yaw={yaw_bot:.0f}°  pitch={pitch_bot:.0f}°")
+        VIEWS = {
+            "top":    dict(yaw=yaw_top, pitch=pitch_top),
+            "bottom": dict(yaw=yaw_bot, pitch=pitch_bot),
+        }
+    else:
+        cluster_labels = np.zeros(len(points), dtype=np.int32)
+        cluster_centers = np.array([[0.0, 0.0, 1.0]])
+        VIEWS = {"top": dict(yaw=0, pitch=0), "bottom": dict(yaw=0, pitch=180)}
+
+    # Visibility filter: surface normal must face toward each camera direction.
+    VIEW_MASK = {}
+    for vname, v in VIEWS.items():
+        R = rotation_matrix(v["yaw"], v["pitch"], 0.0).astype(np.float64)
+        cam_dir = R.T @ np.array([0.0, 0.0, 1.0])
+        if normals_norm is not None:
+            VIEW_MASK[vname] = (normals_norm.astype(np.float64) @ cam_dir) > 0.1
+        else:
+            VIEW_MASK[vname] = np.ones(len(points), dtype=bool)
+
+    # Both panels rendered from the same top-down angle so features are spatially aligned.
+    # VIEW_MASK still selects which surfaces belong to each view.
+    rv = VIEWS["top"]   # single render angle: top-down (pitch=0)
+
     summary_rows: list[np.ndarray] = []
 
     # ── Step 1: Raw point cloud ─────────────────────────────────────────────
     print("\nStep 1: Raw XYZ views")
     raw_panels, raw_labels = [], []
     for vname in VIEW_ORDER:
-        v = VIEWS[vname]
-        sil = render_silhouette(points, v["yaw"], v["pitch"])
+        vm = VIEW_MASK[vname]
+        sil = render_silhouette(points[vm], rv["yaw"], rv["pitch"])
         rgb = silhouette_to_rgb(sil, fg=(160, 160, 180))
         raw_panels.append(rgb)
-        raw_labels.append(f"{vname}  yaw={v['yaw']} pitch={v['pitch']}")
+        raw_labels.append(f"{vname}  ({vm.sum():,} pts)  [top-aligned]")
     row = save_row(raw_panels, raw_labels, "Step 1 | Raw XYZ point cloud", out_dir / "step1_raw.png")
     summary_rows.append(row)
 
@@ -337,28 +395,27 @@ def main() -> None:
         normal_colors = (np.abs(normals_norm) * 255).astype(np.uint8)
         norm_panels, norm_labels = [], []
         for vname in VIEW_ORDER:
-            v = VIEWS[vname]
-            rgb = render_colored(points, normal_colors, v["yaw"], v["pitch"])
+            vm = VIEW_MASK[vname]
+            rgb = render_colored(points[vm], normal_colors[vm], rv["yaw"], rv["pitch"])
             norm_panels.append(rgb)
-            norm_labels.append(f"{vname}  |nx|→R  |ny|→G  |nz|→B")
+            norm_labels.append(f"{vname}  |nx|→R  |ny|→G  |nz|→B  [top-aligned]")
         row = save_row(norm_panels, norm_labels, "Step 2 | Normal direction map", out_dir / "step2_normals.png")
         summary_rows.append(row)
     else:
         print("  (skipped — no normals in XYZ file)")
 
     # ── Step 3: Normal clustering ───────────────────────────────────────────
+    # cluster_labels, cluster_centers already computed in pre-clustering above.
     print("\nStep 3: Normal clustering  (k=8 k-means on unit sphere)")
-    K = 8
     if normals_norm is not None:
-        cluster_labels, cluster_centers = kmeans_sphere(normals_norm, k=K, seed=7)
         point_colors_cluster = PALETTE[cluster_labels % len(PALETTE)]
 
         clust_panels, clust_labels = [], []
         for vname in VIEW_ORDER:
-            v = VIEWS[vname]
-            rgb = render_colored(points, point_colors_cluster, v["yaw"], v["pitch"])
+            vm = VIEW_MASK[vname]
+            rgb = render_colored(points[vm], point_colors_cluster[vm], rv["yaw"], rv["pitch"])
             clust_panels.append(rgb)
-            clust_labels.append(f"{vname}  {K} normal-direction clusters")
+            clust_labels.append(f"{vname}  {K} clusters  [top-aligned]")
         row = save_row(clust_panels, clust_labels,
                        f"Step 3 | Normal clusters (k={K})  each color = one surface orientation",
                        out_dir / "step3_clusters.png")
@@ -366,16 +423,13 @@ def main() -> None:
 
         # Print cluster summary
         for cid in range(K):
-            mask = cluster_labels == cid
-            if mask.sum() < 100:
+            cmask = cluster_labels == cid
+            if cmask.sum() < 100:
                 continue
             cn = cluster_centers[cid]
-            dominant = ["±X", "±Y", "±Z"][np.argmax(np.abs(cn))]
-            print(f"    Cluster {cid}: {mask.sum():6,} pts  dominant={dominant}  "
+            axis_name = ["±X", "±Y", "±Z"][np.argmax(np.abs(cn))]
+            print(f"    Cluster {cid}: {cmask.sum():6,} pts  dominant={axis_name}  "
                   f"n=[{cn[0]:+.2f} {cn[1]:+.2f} {cn[2]:+.2f}]")
-    else:
-        cluster_labels = np.zeros(len(points), dtype=np.int32)
-        cluster_centers = np.array([[0.0, 0.0, 1.0]])
 
     # ── Step 4: Individual planes ───────────────────────────────────────────
     print("\nStep 4: Individual plane extraction  (distance histogram split)")
@@ -395,9 +449,9 @@ def main() -> None:
                 if len(sp) < 300:
                     continue
                 plane_labels[sp] = plane_id
-                dominant = ["X", "Y", "Z"][np.argmax(np.abs(cn))]
+                axis_name = ["X", "Y", "Z"][np.argmax(np.abs(cn))]
                 plane_info.append(dict(id=plane_id, cluster=cid,
-                                       n_pts=len(sp), dominant_axis=dominant,
+                                       n_pts=len(sp), dominant_axis=axis_name,
                                        normal=cn.tolist()))
                 plane_id += 1
     else:
@@ -414,10 +468,10 @@ def main() -> None:
 
     plane_panels, plane_labels_list = [], []
     for vname in VIEW_ORDER:
-        v = VIEWS[vname]
-        rgb = render_colored(points, point_colors_plane, v["yaw"], v["pitch"])
+        vm = VIEW_MASK[vname]
+        rgb = render_colored(points[vm], point_colors_plane[vm], rv["yaw"], rv["pitch"])
         plane_panels.append(rgb)
-        plane_labels_list.append(f"{vname}  {plane_id} planes  (gray=unassigned)")
+        plane_labels_list.append(f"{vname}  {plane_id} planes  [top-aligned]")
     row = save_row(plane_panels, plane_labels_list,
                    f"Step 4 | Individual planes  ({plane_id} total, each color = one plane)",
                    out_dir / "step4_planes.png")
@@ -430,18 +484,17 @@ def main() -> None:
     print("\nStep 5: Inter-plane boundary edges")
     bnd_panels, bnd_labels_list = [], []
     for vname in VIEW_ORDER:
-        v = VIEWS[vname]
-        limg = label_image(points, plane_labels, v["yaw"], v["pitch"])
+        vm = VIEW_MASK[vname]
+        limg = label_image(points[vm], plane_labels[vm], rv["yaw"], rv["pitch"])
         bnd = boundary_mask(limg)
         bnd_dil = dilate(bnd, 1)
 
-        # Base: dimmed plane-colored image
-        base = render_colored(points, point_colors_plane, v["yaw"], v["pitch"])
+        base = render_colored(points[vm], point_colors_plane[vm], rv["yaw"], rv["pitch"])
         base = (base * 0.4).astype(np.uint8)
-        base[bnd_dil] = (255, 220, 60)   # yellow boundary
+        base[bnd_dil] = (255, 220, 60)
 
         bnd_panels.append(base)
-        bnd_labels_list.append(f"{vname}  yellow = plane boundary edges")
+        bnd_labels_list.append(f"{vname}  boundaries  [top-aligned]")
     row = save_row(bnd_panels, bnd_labels_list,
                    "Step 5 | Plane boundary edges  (yellow = transition between planes)",
                    out_dir / "step5_boundaries.png")
@@ -467,10 +520,9 @@ def main() -> None:
         ("top",    top_idx, "top-facing (nz>0)"),
         ("bottom", bot_idx, "bottom-facing (nz<0)"),
     ]:
-        v = VIEWS[vname]
         pts_sub = points[idx_set] if len(idx_set) > 0 else points
 
-        sil = render_silhouette(pts_sub, v["yaw"], v["pitch"])
+        sil = render_silhouette(pts_sub, rv["yaw"], rv["pitch"])
         base_gray = silhouette_to_rgb(sil, fg=(80, 120, 180))
 
         holes = detect_holes(sil, min_hole_px=20)
@@ -493,6 +545,69 @@ def main() -> None:
                    "Step 6 | Circular hole candidates  (red = detected holes/cutouts)",
                    out_dir / "step6_circles.png")
     summary_rows.append(row)
+
+    # ── Step 7: Common mask (intersection of top & bottom views) ───────────
+    print("\nStep 7: Common mask  (pixels visible from BOTH top and bottom)")
+    sil_top = render_silhouette(points[VIEW_MASK["top"]],    rv["yaw"], rv["pitch"])
+    sil_bot = render_silhouette(points[VIEW_MASK["bottom"]], rv["yaw"], rv["pitch"])
+    common  = sil_top & sil_bot   # intersection
+    union   = sil_top | sil_bot
+
+    h_s, w_s = sil_top.shape
+    # Panel 1: top silhouette (gray)
+    p_top = silhouette_to_rgb(sil_top, fg=(140, 160, 220))
+    # Panel 2: bottom silhouette (gray)
+    p_bot = silhouette_to_rgb(sil_bot, fg=(220, 160, 140))
+    # Panel 3: common mask — green where both, dim elsewhere
+    p_common = np.full((h_s, w_s, 3), BG, dtype=np.uint8)
+    p_common[union]  = (60,  60,  60)   # union: dark gray
+    p_common[common] = (60, 220,  80)   # common: bright green
+
+    pct_top    = sil_top.sum()  / sil_top.size  * 100
+    pct_bot    = sil_bot.sum()  / sil_top.size  * 100
+    pct_common = common.sum()   / sil_top.size  * 100
+    print(f"  top coverage:    {pct_top:.1f}%  ({sil_top.sum():,} px)")
+    print(f"  bottom coverage: {pct_bot:.1f}%  ({sil_bot.sum():,} px)")
+    print(f"  common (AND):    {pct_common:.1f}%  ({common.sum():,} px)")
+
+    row = save_row(
+        [p_top, p_bot, p_common],
+        [f"top silhouette  ({pct_top:.1f}%)",
+         f"bottom silhouette  ({pct_bot:.1f}%)",
+         f"common mask (AND)  {pct_common:.1f}%  [green]"],
+        "Step 7 | Common mask — pixels seen by BOTH top and bottom views",
+        out_dir / "step7_common_mask.png",
+    )
+    summary_rows.append(row)
+
+    # Binary mask PNGs (0=black / 255=white, single channel).
+    def save_binary(arr: np.ndarray, path: Path) -> None:
+        Image.fromarray((arr.astype(np.uint8) * 255), mode="L").save(path)
+
+    save_binary(sil_top, out_dir / "mask_top.png")
+    save_binary(sil_bot, out_dir / "mask_bottom.png")
+    save_binary(common,  out_dir / "mask_common.png")
+
+    # mask_top rendered with yaw=90° (90° CW) — matches camera_back (top view)
+    sil_top_yaw90 = render_silhouette(points[VIEW_MASK["top"]], 90.0, rv["pitch"])
+    save_binary(sil_top_yaw90, out_dir / "mask_top_yaw_90.png")
+
+    # mask_bottom vertically flipped — matches camera_front (bottom view)
+    save_binary(np.flipud(sil_bot), out_dir / "mask_bottom_flip.png")
+
+    # camera-aligned common masks
+    # top camera: both top-facing and bottom-facing rendered at yaw=90°, take intersection
+    sil_top_90  = render_silhouette(points[VIEW_MASK["top"]],    90.0, rv["pitch"])
+    sil_bot_90  = render_silhouette(points[VIEW_MASK["bottom"]], 90.0, rv["pitch"])
+    common_top_cam = sil_top_90 & sil_bot_90
+    save_binary(common_top_cam,          out_dir / "mask_common_top_cam.png")
+
+    # bottom camera: common mask (yaw=0°) vertically flipped
+    save_binary(np.flipud(common),       out_dir / "mask_common_bot_cam.png")
+
+    print(f"  Saved mask_top / mask_bottom / mask_common"
+          f" / mask_top_yaw_90 / mask_bottom_flip"
+          f" / mask_common_top_cam / mask_common_bot_cam  (binary L)")
 
     # ── Summary ─────────────────────────────────────────────────────────────
     print("\nBuilding summary sheet ...")

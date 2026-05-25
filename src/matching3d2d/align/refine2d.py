@@ -4,7 +4,7 @@ import numpy as np
 
 from ..geometry.transforms import rotation_matrix
 from ..render.point_renderer import dilate, edge_from_mask
-from .losses import m1_score
+from .losses import m1_score, silhouette_iou
 
 _SCALE_DELTAS = [-0.12, -0.08, -0.04, 0.0, 0.04, 0.08, 0.12]
 _TX_PX = [-40.0, -20.0, 0.0, 20.0, 40.0]
@@ -25,6 +25,8 @@ def refine2d(
     tx_values: list[float] | None = None,
     ty_values: list[float] | None = None,
     roll_values: list[float] | None = None,
+    invert_render: bool = False,
+    score_mode: str = "m1",
 ) -> dict:
     """Grid search over 2D scale, translation, and roll offsets.
 
@@ -93,17 +95,22 @@ def refine2d(
                     if point_radius > 0:
                         render_mask = dilate(render_mask, point_radius)
                     render_mask = dilate(render_mask, 1)
+                    if invert_render:
+                        render_mask = ~render_mask
                     render_edges = dilate(edge_from_mask(render_mask), 1)
 
-                    score = m1_score(
-                        render_mask,
-                        render_edges,
-                        image_mask,
-                        image_contour,
-                        image_internal,
-                        image_contour_dilated=img_contour_dil,
-                        image_internal_dilated=img_internal_dil,
-                    )
+                    if score_mode == "iou":
+                        score = silhouette_iou(render_mask, image_mask)
+                    else:
+                        score = m1_score(
+                            render_mask,
+                            render_edges,
+                            image_mask,
+                            image_contour,
+                            image_internal,
+                            image_contour_dilated=img_contour_dil,
+                            image_internal_dilated=img_internal_dil,
+                        )
                     if score > best_score:
                         best_score = score
                         best = {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..render.point_renderer import dilate, render_points
-from .losses import m1_score
+from .losses import m1_score, silhouette_iou
 
 
 def run_coarse_search(
@@ -18,6 +18,8 @@ def run_coarse_search(
     point_radius: int = 1,
     search_flip_x: bool = True,
     search_flip_y: bool = False,
+    invert_render: bool = False,
+    score_mode: str = "m1",
 ) -> list[dict]:
     """Score all (yaw, pitch, flip) candidates; return sorted descending by score.
 
@@ -42,15 +44,20 @@ def run_coarse_search(
                         pad=pad, point_radius=point_radius,
                         flip_x=flip_x, flip_y=flip_y,
                     )
-                    score = m1_score(
-                        render_mask,
-                        render_edges,
-                        image_mask,
-                        image_contour,
-                        image_internal,
-                        image_contour_dilated=img_contour_dil,
-                        image_internal_dilated=img_internal_dil,
-                    )
+                    if invert_render:
+                        render_mask = ~render_mask
+                    if score_mode == "iou":
+                        score = silhouette_iou(render_mask, image_mask)
+                    else:
+                        score = m1_score(
+                            render_mask,
+                            render_edges,
+                            image_mask,
+                            image_contour,
+                            image_internal,
+                            image_contour_dilated=img_contour_dil,
+                            image_internal_dilated=img_internal_dil,
+                        )
                     results.append(
                         {
                             "yaw_deg": yaw,
