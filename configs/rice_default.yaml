@@ -1,0 +1,29 @@
+# Default configuration for the rice PCB dataset.
+
+xyz_path: basic_shapes/s_rice.xyz
+images_dir: camera_images
+output_dir: outputs
+
+render:
+  width: 576
+  height: 324
+  point_radius: 1
+  pad: 0.12
+
+coarse_search:
+  yaw: "0:345:15"      # 24 candidates (0, 15, ..., 345 deg)
+  pitch: "-25,0,25"    # 3 candidates
+  max_points: 220000
+  seed: 7
+  top_k: 3             # candidates passed to 2D refinement
+
+refine2d:
+  scale_deltas: [-0.12, -0.08, -0.04, 0.0, 0.04, 0.08, 0.12]
+  tx_px:        [-40, -20, 0, 20, 40]
+  ty_px:        [-40, -20, 0, 20, 40]
+  roll_deg:     [-8, -4, 0, 4, 8]
+
+mask:
+  border_px:   8
+  close_iters: 4
+  min_area_px: 500

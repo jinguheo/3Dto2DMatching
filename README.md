@@ -8,15 +8,40 @@ Pipeline experiments for matching STEP-derived 3D geometry to calibrated 2D came
 - `basic_shapes/s_rice.xyz`: dense point and normal samples extracted from the STEP file.
 - `camera_images/`: calibrated top/bottom camera images.
 
-## Current Baseline
+## M1: Mask-Aware Alignment (current)
 
-Run the initial XYZ view matching baseline:
+Run the M1 pipeline — object mask extraction, contour-based scoring, and 2D refinement:
+
+```powershell
+python scripts\align_camera_images.py
+```
+
+Options:
+
+```powershell
+# Fast mode: skip 2D refinement, use coarse best pose only
+python scripts\align_camera_images.py --no-refine
+
+# Refine only the single best coarse candidate (faster than default top-3)
+python scripts\align_camera_images.py --top-k 1
+```
+
+Outputs written under `outputs/alignments/`:
+
+- `best_poses.csv` — best pose per image
+- `best_overlays_contact_sheet.png` — all 6 overlay previews
+- `<image_stem>/pose.json` — weak-perspective pose (yaw, pitch, roll, scale, tx, ty, score)
+- `<image_stem>/overlay_geometry.png` — camera image with CAD edges and object contour overlaid
+
+## M0: Baseline View Search
+
+Original edge-based view retrieval (no mask, no refinement):
 
 ```powershell
 python scripts\match_xyz_views.py
 ```
 
-The script renders candidate point-cloud views and writes match scores and overlay previews under `outputs/`.
+Outputs written under `outputs/xyz_view_matching/`.
 
 ## Design
 
